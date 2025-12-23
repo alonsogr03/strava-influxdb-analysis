@@ -1,0 +1,21 @@
+# Librerías para conexión con Strava API
+stravalib==1.6.0
+requests==2.31.0
+
+# Librerías para InfluxDB
+influxdb-client==1.38.0
+
+# Librerías para manipulación de datos
+pandas>=2.2.0
+numpy>=1.26.0
+
+# Librerías para variables de entorno
+python-dotenv==1.0.0
+
+# Librerías para visualización (opcional, para análisis local)
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly>=5.18.0
+
+# Librerías para fechas
+python-dateutil==2.8.2

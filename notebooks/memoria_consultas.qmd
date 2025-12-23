@@ -1,0 +1,133 @@
+---
+title: "Memoria de Consultas - Análisis de Datos de Strava"
+author: "Alba y Alonso"
+date: today
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    number-sections: true
+editor: visual
+---
+
+# Introducción
+
+Este documento contiene la memoria de las consultas realizadas sobre los datos de actividades de Strava almacenados en InfluxDB.
+
+## Objetivos
+
+- Analizar patrones de actividad física
+- Extraer métricas relevantes de rendimiento
+- Visualizar tendencias temporales
+
+## Estructura de Datos
+
+Descripción de la estructura de datos almacenada en InfluxDB:
+
+- **Measurement**: actividades_strava
+- **Tags**: usuario, tipo_actividad
+- **Fields**: (añadir campos relevantes)
+
+# Configuración del Entorno
+
+```{python}
+# Importar librerías necesarias
+# import influxdb_client
+# from influxdb_client.client.query_api import QueryApi
+# import pandas as pd
+# import plotly.express as px
+```
+
+# Consultas Realizadas
+
+## Consulta 1: [Título de la consulta]
+
+### Descripción
+Descripción de qué pretende analizar esta consulta.
+
+### Código Flux
+```flux
+# Aquí irá tu consulta en Flux
+```
+
+### Resultados
+Análisis e interpretación de los resultados.
+
+### Visualización
+```{python}
+# Código para visualizar los resultados
+```
+
+---
+
+## Consulta 2: [Título de la consulta]
+
+### Descripción
+Descripción de qué pretende analizar esta consulta.
+
+### Código Flux
+```flux
+# Aquí irá tu consulta en Flux
+```
+
+### Resultados
+Análisis e interpretación de los resultados.
+
+### Visualización
+```{python}
+# Código para visualizar los resultados
+```
+
+---
+
+## Consulta 3: [Título de la consulta]
+
+### Descripción
+Descripción de qué pretende analizar esta consulta.
+
+### Código Flux
+```flux
+# Aquí irá tu consulta en Flux
+```
+
+### Resultados
+Análisis e interpretación de los resultados.
+
+### Visualización
+```{python}
+# Código para visualizar los resultados
+```
+
+---
+
+## Consulta 4: [Título de la consulta]
+
+### Descripción
+Descripción de qué pretende analizar esta consulta.
+
+### Código Flux
+```flux
+# Aquí irá tu consulta en Flux
+```
+
+### Resultados
+Análisis e interpretación de los resultados.
+
+### Visualización
+```{python}
+# Código para visualizar los resultados
+```
+
+---
+
+# Conclusiones
+
+Resumen de los hallazgos principales y conclusiones del análisis.
+
+# Referencias
+
+- [Documentación de Strava API](https://developers.strava.com/)
+- [Documentación de InfluxDB](https://docs.influxdata.com/)

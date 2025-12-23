@@ -1,0 +1,2 @@
+# Esta carpeta almacena los datos extraídos de Strava
+# Los archivos .json y .csv serán ignorados por git (ver .gitignore)
