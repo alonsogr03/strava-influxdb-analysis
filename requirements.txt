@@ -1,9 +1,8 @@
 # Librerías para conexión con Strava API
-stravalib==1.6.0
 requests==2.31.0
 
 # Librerías para InfluxDB
-influxdb-client==1.38.0
+influxdb3-python>=0.6.0
 
 # Librerías para manipulación de datos
 pandas>=2.2.0

@@ -1,200 +1,336 @@
 """
 Script principal para extraer datos de Strava y cargarlos en InfluxDB
 Autores: Alba y Alonso
+Fecha: 2025-12-24
 """
 
 import os
-import json
-from datetime import datetime
-from dotenv import load_dotenv
-from stravalib.client import Client
-from influxdb_client import InfluxDBClient, Point, WritePrecision
-from influxdb_client.client.write_api import SYNCHRONOUS
+import requests
 import pandas as pd
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from influxdb_client_3 import InfluxDBClient3
 
 # Cargar variables de entorno
 load_dotenv()
 
 
-class StravaToInfluxDB:
-    """Clase para manejar la extracción de datos de Strava y carga a InfluxDB"""
+def obtener_token_acceso(client_id, client_secret, refresh_token, usuario):
+    """
+    Obtiene un access token válido usando el refresh token.
+    Basado en crear_token_refresco.py
+    """
+    print(f"🔄 Refrescando token de Strava para {usuario}...")
+    auth_url = "https://www.strava.com/oauth/token"
+    payload = {
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'refresh_token': refresh_token,
+        'grant_type': 'refresh_token',
+        'f': 'json'
+    }
     
-    def __init__(self):
-        """Inicializar conexiones con Strava e InfluxDB"""
-        # Configuración de usuarios
-        self.users = {
-            'Alba': {
-                'access_token': os.getenv('STRAVA_TOKEN_ALBA')
-            },
-            'Alonso': {
-                'access_token': os.getenv('STRAVA_TOKEN_ALONSO')
-            }
-        }
+    try:
+        res = requests.post(auth_url, data=payload, verify=False)
+        res.raise_for_status()
+        access_token = res.json()['access_token']
+        print(f"✅ Token renovado exitosamente para {usuario}")
+        return access_token
+    except Exception as e:
+        print(f"❌ Error al refrescar token: {e}")
+        return None
+
+
+def descargar_datos_actividad(activity_id, access_token):
+    """
+    Descarga todos los datos (streams) de una actividad de Strava.
+    Basado en pruebas.py
+    """
+    # 1. Solicitamos TODOS los streams posibles
+    keys = "time,distance,latlng,altitude,velocity_smooth,heartrate,cadence,watts,temp,grade_smooth"
+    url = f"https://www.strava.com/api/v3/activities/{activity_id}/streams?keys={keys}&key_by_type=true"
+    
+    headers = {'Authorization': f"Bearer {access_token}"}
+    print(f"⏳ Conectando con Strava para actividad {activity_id}...")
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        print(f"❌ Error al descargar actividad: {response.text}")
+        return None
+
+    streams = response.json()
+    
+    # 2. Verificar que hay datos de tiempo
+    if 'time' not in streams:
+        print("❌ Esta actividad no tiene datos de tiempo (quizás es manual).")
+        return None
+
+    data_dict = {}
+    
+    # 3. Convertir los streams en un diccionario
+    for key, value in streams.items():
+        if key == 'latlng':
+            # Separar latitud y longitud
+            lats = [x[0] for x in value['data']]
+            lngs = [x[1] for x in value['data']]
+            data_dict['latitude'] = lats
+            data_dict['longitude'] = lngs
+        else:
+            data_dict[key] = value['data']
+
+    # 4. Crear DataFrame
+    df = pd.DataFrame(data_dict)
+    
+    # 5. Obtener información adicional de la actividad (fecha de inicio)
+    url_act = f"https://www.strava.com/api/v3/activities/{activity_id}"
+    resp_act = requests.get(url_act, headers=headers).json()
+    start_date = datetime.strptime(resp_act['start_date'], "%Y-%m-%dT%H:%M:%SZ")
+    
+    # 6. Calcular timestamps reales
+    df['timestamp_real'] = df['time'].apply(lambda x: start_date + timedelta(seconds=x))
+    
+    # 7. Reordenar columnas
+    cols = ['timestamp_real', 'time'] + [c for c in df.columns if c not in ['timestamp_real', 'time']]
+    df = df[cols]
+
+    return df
+
+
+def guardar_csv(df, activity_id, data_path="data/"):
+    """
+    Guarda el DataFrame en un archivo CSV.
+    """
+    os.makedirs(data_path, exist_ok=True)
+    nombre_archivo = f"{data_path}strava_activity_{activity_id}.csv"
+    df.to_csv(nombre_archivo, index=False)
+    print(f"✅ Archivo guardado exitosamente: {nombre_archivo}")
+    return nombre_archivo
+
+
+def preparar_csv_para_influx(archivo_csv, usuario, id_actividad, tipo_actividad):
+    """
+    Modifica el CSV añadiendo columnas de usuario, id_actividad, tipo_actividad y measurement.
+    """
+    df = pd.read_csv(archivo_csv)
+    
+    # Añadir columnas necesarias
+    df['measurement'] = tipo_actividad  # Nombre de la tabla/measurement en InfluxDB
+    df['usuario'] = usuario
+    df['id_actividad'] = id_actividad
+    df['tipo_actividad'] = tipo_actividad
+    
+    # Guardar el CSV modificado
+    archivo_modificado = archivo_csv.replace('.csv', '_modificado.csv')
+    df.to_csv(archivo_modificado, index=False)
+    print(f"✅ CSV modificado guardado: {archivo_modificado}")
+    return archivo_modificado
+
+
+def subir_a_influxdb(archivo_csv, tipo_actividad, host, token, org, database):
+    """
+    Sube el CSV a InfluxDB en la tabla correspondiente según el tipo de actividad.
+    Usa influxdb_client_3.
+    """
+    try:
+        # Crear la conexión a InfluxDB
+        client = InfluxDBClient3(host=host, token=token, org=org, database=database)
         
-        # Configuración de InfluxDB
-        self.influx_url = os.getenv('INFLUX_URL', 'http://localhost:8086')
-        self.influx_token = os.getenv('INFLUX_TOKEN')
-        self.influx_org = os.getenv('INFLUX_ORG')
-        self.influx_bucket = os.getenv('INFLUX_BUCKET')
+        # Determinar las columnas que son tags
+        tag_columns = ["measurement", "usuario", "id_actividad", "tipo_actividad"]
         
-        # Cliente de InfluxDB
-        self.influx_client = InfluxDBClient(
-            url=self.influx_url,
-            token=self.influx_token,
-            org=self.influx_org
+        # Subir el archivo
+        print(f"⏳ Subiendo datos a InfluxDB en la tabla '{tipo_actividad}'...")
+        client.write_file(
+            file=archivo_csv,
+            tag_columns=tag_columns,
+            timestamp_column="timestamp_real",
+            data_format="csv"
         )
-        self.write_api = self.influx_client.write_api(write_options=SYNCHRONOUS)
+        
+        print(f"✅ Datos subidos exitosamente a InfluxDB (tabla: {tipo_actividad})")
+        client.close()
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error al subir datos a InfluxDB: {e}")
+        return False
+
+
+def main():
+    """
+    Función principal del script
+    """
+    print("\n" + "="*60)
+    print("   SISTEMA DE CARGA DE DATOS STRAVA → InfluxDB")
+    print("="*60 + "\n")
     
-    def select_user(self):
-        """Permite al usuario seleccionar su perfil"""
-        print("\n=== SISTEMA DE CARGA DE DATOS STRAVA ===\n")
-        print("Selecciona el usuario:")
-        print("1. Alba")
-        print("2. Alonso")
-        
-        while True:
-            choice = input("\nIngresa el número (1 o 2): ").strip()
-            if choice == '1':
-                return 'Alba'
-            elif choice == '2':
-                return 'Alonso'
-            else:
-                print("Opción inválida. Intenta de nuevo.")
+    # Paso 1: Preguntar quién es
+    print("👤 ¿Quién eres?")
+    print("1. Alba")
+    print("2. Alonso")
     
-    def get_strava_client(self, user_name):
-        """Crear cliente de Strava para el usuario seleccionado"""
-        access_token = self.users[user_name]['access_token']
-        
-        if not access_token:
-            raise ValueError(f"Token de acceso no configurado para {user_name}")
-        
-        client = Client(access_token=access_token)
-        return client
+    while True:
+        opcion = input("\nSelecciona 1 o 2: ").strip()
+        if opcion == '1':
+            usuario = 'Alba'
+            break
+        elif opcion == '2':
+            usuario = 'Alonso'
+            break
+        else:
+            print("❌ Opción inválida. Intenta de nuevo.")
     
-    def get_activity_data(self, client, activity_id):
-        """Obtener datos de una actividad específica de Strava"""
-        try:
-            activity = client.get_activity(activity_id)
-            
-            # Extraer datos relevantes
-            activity_data = {
-                'id': activity.id,
-                'name': activity.name,
-                'type': activity.type,
-                'distance': float(activity.distance) if activity.distance else 0,
-                'moving_time': int(activity.moving_time.total_seconds()) if activity.moving_time else 0,
-                'elapsed_time': int(activity.elapsed_time.total_seconds()) if activity.elapsed_time else 0,
-                'total_elevation_gain': float(activity.total_elevation_gain) if activity.total_elevation_gain else 0,
-                'start_date': activity.start_date,
-                'average_speed': float(activity.average_speed) if activity.average_speed else 0,
-                'max_speed': float(activity.max_speed) if activity.max_speed else 0,
-                'average_heartrate': float(activity.average_heartrate) if activity.average_heartrate else None,
-                'max_heartrate': float(activity.max_heartrate) if activity.max_heartrate else None,
-                'calories': float(activity.calories) if activity.calories else None,
-            }
-            
-            return activity_data
-        
-        except Exception as e:
-            print(f"Error al obtener actividad {activity_id}: {e}")
-            return None
+    print(f"\n✅ Usuario seleccionado: {usuario}")
     
-    def save_to_local(self, activity_data, user_name):
-        """Guardar datos localmente en la carpeta data"""
-        filename = f"data/activity_{activity_data['id']}_{user_name}.json"
-        
-        # Convertir datetime a string para JSON
-        data_to_save = activity_data.copy()
-        if 'start_date' in data_to_save:
-            data_to_save['start_date'] = data_to_save['start_date'].isoformat()
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data_to_save, f, indent=4, ensure_ascii=False)
-        
-        print(f"✓ Datos guardados localmente en: {filename}")
+    if usuario == 'Alba':
+        print("\n" + "🎄" * 30)
+        print("   Hola Alba, soy Alonso!")
+        print("   🎅 ¡Feliz Navidad! 🎅")
+        print("   Seguramente esté pensando en el gofre que me debes :)")
+        print("🎄" * 30 + "\n")
     
-    def upload_to_influxdb(self, activity_data, user_name, activity_type):
-        """Subir datos a InfluxDB"""
-        try:
-            # Crear punto de datos para InfluxDB
-            point = Point("actividad_strava") \
-                .tag("usuario", user_name) \
-                .tag("tipo_actividad", activity_type) \
-                .tag("activity_id", str(activity_data['id'])) \
-                .tag("activity_name", activity_data['name']) \
-                .field("distance", activity_data['distance']) \
-                .field("moving_time", activity_data['moving_time']) \
-                .field("elapsed_time", activity_data['elapsed_time']) \
-                .field("elevation_gain", activity_data['total_elevation_gain']) \
-                .field("average_speed", activity_data['average_speed']) \
-                .field("max_speed", activity_data['max_speed']) \
-                .time(activity_data['start_date'], WritePrecision.NS)
-            
-            # Añadir campos opcionales si existen
-            if activity_data.get('average_heartrate'):
-                point.field("average_heartrate", activity_data['average_heartrate'])
-            if activity_data.get('max_heartrate'):
-                point.field("max_heartrate", activity_data['max_heartrate'])
-            if activity_data.get('calories'):
-                point.field("calories", activity_data['calories'])
-            
-            # Escribir en InfluxDB
-            self.write_api.write(bucket=self.influx_bucket, org=self.influx_org, record=point)
-            print(f"✓ Datos subidos correctamente a InfluxDB")
-            
-        except Exception as e:
-            print(f"✗ Error al subir datos a InfluxDB: {e}")
+    # Configuración de credenciales desde variables de entorno
+    usuarios_config = {
+        'Alba': {
+            'client_id': os.getenv('STRAVA_CLIENT_ID_ALBA'),
+            'client_secret': os.getenv('STRAVA_CLIENT_SECRET_ALBA'),
+            'refresh_token': os.getenv('STRAVA_REFRESH_TOKEN_ALBA')
+        },
+        'Alonso': {
+            'client_id': os.getenv('STRAVA_CLIENT_ID_ALONSO'),
+            'client_secret': os.getenv('STRAVA_CLIENT_SECRET_ALONSO'),
+            'refresh_token': os.getenv('STRAVA_REFRESH_TOKEN_ALONSO')
+        }
+    }
     
-    def run(self):
-        """Ejecutar el flujo principal del programa"""
-        try:
-            # Seleccionar usuario
-            user_name = self.select_user()
-            print(f"\n✓ Usuario seleccionado: {user_name}")
-            
-            # Obtener cliente de Strava
-            client = self.get_strava_client(user_name)
-            print(f"✓ Conectado a Strava como {user_name}")
-            
-            # Solicitar ID de actividad
-            activity_id = input("\nIngresa el ID de la actividad de Strava: ").strip()
-            
-            # Solicitar tipo de actividad
-            print("\nTipo de actividad:")
-            print("Ejemplos: Run, Ride, Swim, Hike, Walk, etc.")
-            activity_type = input("Ingresa el tipo de actividad: ").strip()
-            
-            print(f"\n⏳ Obteniendo datos de la actividad {activity_id}...")
-            
-            # Obtener datos de la actividad
-            activity_data = self.get_activity_data(client, int(activity_id))
-            
-            if activity_data:
-                print(f"\n✓ Actividad obtenida: {activity_data['name']}")
-                print(f"  - Tipo: {activity_data['type']}")
-                print(f"  - Distancia: {activity_data['distance']/1000:.2f} km")
-                print(f"  - Tiempo: {activity_data['moving_time']//60} minutos")
-                
-                # Guardar localmente
-                self.save_to_local(activity_data, user_name)
-                
-                # Subir a InfluxDB
-                print(f"\n⏳ Subiendo datos a InfluxDB...")
-                self.upload_to_influxdb(activity_data, user_name, activity_type)
-                
-                print(f"\n✓ Proceso completado exitosamente!")
-            else:
-                print(f"\n✗ No se pudieron obtener los datos de la actividad")
+    config = usuarios_config[usuario]
+    
+    # Verificar que existen las credenciales
+    if not all([config['client_id'], config['client_secret'], config['refresh_token']]):
+        print(f"❌ Error: Faltan credenciales de Strava para {usuario} en las variables de entorno")
+        return
+    
+    # Paso 2: Obtener token de acceso
+    access_token = obtener_token_acceso(
+        config['client_id'],
+        config['client_secret'],
+        config['refresh_token'],
+        usuario
+    )
+    
+    if not access_token:
+        print("❌ No se pudo obtener el token de acceso. Abortando.")
+        return
+    
+    # Paso 2b: Preguntar número de actividad
+    activity_id = input("\n🔢 Ingresa el número de actividad de Strava: ").strip()
+    
+    if not activity_id.isdigit():
+        print("❌ El ID de actividad debe ser un número.")
+        return
+    
+    # Paso 3: Preguntar tipo de actividad
+    print("\n🏃 ¿Qué tipo de actividad es?")
+    print("1. Run (Correr)")
+    print("2. Cycling (Ciclismo)")
+    print("3. Swimming (Natación)")
+    
+    tipos_actividad = {
+        '1': 'Run',
+        '2': 'Cycling',
+        '3': 'Swimming'
+    }
+    
+    while True:
+        opcion_tipo = input("\nSelecciona 1, 2 o 3: ").strip()
+        if opcion_tipo in tipos_actividad:
+            tipo_actividad = tipos_actividad[opcion_tipo]
+            break
+        else:
+            print("❌ Opción inválida. Intenta de nuevo.")
+    
+    print(f"✅ Tipo de actividad: {tipo_actividad}")
+    
+    # Paso 4: Descargar datos de la actividad
+    print(f"\n⏳ Descargando datos de la actividad {activity_id}...")
+    df = descargar_datos_actividad(activity_id, access_token)
+    
+    if df is None:
+        print("❌ No se pudieron descargar los datos de la actividad.")
+        return
+    
+    # Guardar CSV original
+    archivo_csv = guardar_csv(df, activity_id)
+    
+    # Mostrar preview
+    print("\n📊 Vista previa de los datos (primeras 5 filas):")
+    print(df.head())
+    print(f"\n📈 Total de registros: {len(df)}")
+    print(f"📋 Columnas disponibles: {', '.join(df.columns.tolist())}")
+    
+    # Paso 4b: Preguntar si revisar y subir
+    print(f"\n⚠️  Por favor, revisa el archivo: {archivo_csv}")
+    print("    Asegúrate de que los datos son correctos antes de subirlos.")
+    
+    while True:
+        respuesta = input("\n¿Subes el archivo a InfluxDB? (S/N): ").strip().upper()
+        if respuesta in ['S', 'N']:
+            break
+        else:
+            print("❌ Por favor, responde S o N.")
+    
+    # Paso 5: Subir a InfluxDB si el usuario acepta
+    if respuesta == 'S':
+        # Preparar CSV con columnas adicionales
+        archivo_modificado = preparar_csv_para_influx(
+            archivo_csv,
+            usuario,
+            activity_id,
+            tipo_actividad
+        )
         
-        except KeyboardInterrupt:
-            print("\n\n✗ Proceso cancelado por el usuario")
-        except Exception as e:
-            print(f"\n✗ Error: {e}")
-        finally:
-            # Cerrar conexión con InfluxDB
-            self.influx_client.close()
+        # Obtener configuración de InfluxDB desde variables de entorno
+        influx_host = os.getenv('INFLUX_HOST')
+        influx_token = os.getenv('INFLUX_TOKEN')
+        influx_org = os.getenv('INFLUX_ORG')
+        influx_database = os.getenv('INFLUX_DATABASE')
+        
+        if not all([influx_host, influx_token, influx_org, influx_database]):
+            print("❌ Error: Faltan credenciales de InfluxDB en las variables de entorno")
+            print("   Variables necesarias: INFLUX_HOST, INFLUX_TOKEN, INFLUX_ORG, INFLUX_DATABASE")
+            return
+        
+        # Subir a InfluxDB
+        exito = subir_a_influxdb(
+            archivo_modificado,
+            tipo_actividad,
+            influx_host,
+            influx_token,
+            influx_org,
+            influx_database
+        )
+        
+        if exito:
+            print(f"\n🎉 ¡Proceso completado exitosamente!")
+            print(f"   - Usuario: {usuario}")
+            print(f"   - Actividad: {activity_id}")
+            print(f"   - Tipo: {tipo_actividad}")
+            print(f"   - Registros: {len(df)}")
+        else:
+            print("\n❌ Hubo un error al subir los datos a InfluxDB.")
+    else:
+        print("\n⏹️  Subida cancelada. Los datos están guardados localmente en:")
+        print(f"   {archivo_csv}")
+    
+    print("\n" + "="*60)
+    print("   Gracias por usar el sistema")
+    print("="*60 + "\n")
 
 
 if __name__ == "__main__":
-    app = StravaToInfluxDB()
-    app.run()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n⏹️  Proceso interrumpido por el usuario.")
+    except Exception as e:
+        print(f"\n❌ Error inesperado: {e}")
