@@ -1,133 +1,224 @@
 ---
-title: "Memoria de Consultas - Análisis de Datos de Strava"
-author: "Alba y Alonso"
+title: "Práctica Final. Memoria de Consultas sobre Datos de Strava en InfluxDB"
+author:
+  - Alba Martínez de la Hermosa
+  - Alonso González Romero
 date: today
 format:
   html:
-    theme: cosmo
+    page-layout: full  
+    css: style.css
+    embed-resources: true
+    plotly-connected: true
     toc: true
     toc-depth: 3
-    code-fold: true
-    code-tools: true
     number-sections: true
-editor: visual
+lang: es
+abstract: |
+  En esta memoria se documentan las consultas realizadas sobre los datos de actividades de Strava, almacenados en una base de datos InfluxDB. Se incluyen descripciones de las consultas, el código utilizado, los resultados obtenidos y visualizaciones relevantes.
 ---
 
 # Introducción
 
-Este documento contiene la memoria de las consultas realizadas sobre los datos de actividades de Strava almacenados en InfluxDB.
+En el contexto actual del análisis deportivo, la capacidad de centralizar, procesar y explotar datos biométricos y de posicionamiento es fundamental para evaluar el rendimiento. Este proyecto tiene como objetivo principal la creación de una arquitectura de datos escalable para el almacenamiento y análisis de actividades deportivas de carrera.
 
-## Objetivos
+El proyecto aborda la problemática de la dispersión de datos en plataformas de terceros (como Strava) mediante la implementación de un proceso **ETL (Extract, Transform, Load)** propio. Hemos diseñado un sistema que permite a dos usuarios diferentes (Alba y Alonso) extraer sus actividades con granulaidad de segundo (series temporales), normalizarlas y almacenarlas en una base de datos **InfluxDB**. Esto nos permite superar las limitaciones de análisis de las aplicaciones comerciales y realizar consultas personalizadas sobre variables críticas como la frecuencia cardíaca, la potencia estimada, la velocidad y la pendiente.
 
-- Analizar patrones de actividad física
-- Extraer métricas relevantes de rendimiento
-- Visualizar tendencias temporales
+# Arquitectura del Sistema y Proceso ETL
 
-## Estructura de Datos
+## Extracción de Datos desde la API de Strava
 
-Descripción de la estructura de datos almacenada en InfluxDB:
+El proceso de extracción de datos comienza con la autenticación en la **API de Strava** mediante el protocolo OAuth 2.0. Para ello, cada usuario (Alba y Alonso) dispone de credenciales únicas almacenadas de forma segura en un archivo `.env` (no versionado en el repositorio). Este archivo contiene:
 
-- **Measurement**: actividades_strava
-- **Tags**: usuario, tipo_actividad
-- **Fields**: (añadir campos relevantes)
+- **Client ID**: Identificador de la aplicación registrada en Strava
+- **Client Secret**: Clave secreta de la aplicación
+- **Refresh Token**: Token de larga duración que permite obtener access tokens sin intervención manual
 
-# Configuración del Entorno
+El script principal (`main.py`) utiliza la librería `python-dotenv` para cargar estas variables de entorno de forma segura, evitando hardcodear credenciales sensibles en el código fuente.
+
+### Flujo de Autenticación y Obtención de Tokens
+
+La función `obtener_token_acceso()` implementa el flujo de renovación de tokens:
+
+1. Realiza una petición POST al endpoint `https://www.strava.com/oauth/token`
+2. Envía el refresh token junto con las credenciales de la aplicación
+3. Recibe un nuevo access token válido por 6 horas
+4. Este access token se utiliza para todas las peticiones posteriores a la API
+
+```python
+def obtener_token_acceso(client_id, client_secret, refresh_token, usuario):
+    auth_url = "https://www.strava.com/oauth/token"
+    payload = {
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'refresh_token': refresh_token,
+        'grant_type': 'refresh_token',
+        'f': 'json'
+    }
+    res = requests.post(auth_url, data=payload, verify=False)
+    return res.json()['access_token']
+```
+
+### Descarga de Datos de Actividades (Streams)
+
+Una vez autenticados, utilizamos el endpoint de **streams** de Strava para obtener datos de alta granularidad (segundo a segundo) de cada actividad. La función `descargar_datos_actividad()` solicita todos los streams disponibles:
+
+- **time**: Tiempo transcurrido desde el inicio (segundos)
+- **distance**: Distancia acumulada (metros)
+- **latlng**: Coordenadas GPS (latitud, longitud)
+- **altitude**: Altitud (metros)
+- **velocity_smooth**: Velocidad suavizada (m/s)
+- **heartrate**: Frecuencia cardíaca (bpm)
+- **cadence**: Cadencia de pasos o pedaladas (rpm/spm)
+- **watts**: Potencia (solo si disponible)
+- **temp**: Temperatura
+- **grade_smooth**: Pendiente suavizada (%)
+
+El proceso de transformación incluye:
+
+1. **Separación de coordenadas GPS**: El stream `latlng` contiene arrays de [latitud, longitud] que se separan en columnas independientes
+2. **Cálculo de timestamps absolutos**: Los valores de `time` (relativos al inicio) se convierten a timestamps absolutos sumándolos a la fecha de inicio de la actividad
+3. **Creación de DataFrame**: Todos los streams se consolidan en un DataFrame de pandas
+
+```python
+# Obtener fecha de inicio de la actividad
+url_act = f"https://www.strava.com/api/v3/activities/{activity_id}"
+resp_act = requests.get(url_act, headers=headers).json()
+start_date = datetime.strptime(resp_act['start_date'], "%Y-%m-%dT%H:%M:%SZ")
+
+# Calcular timestamps reales
+df['timestamp_real'] = df['time'].apply(lambda x: start_date + timedelta(seconds=x))
+```
+
+## Transformación y Preparación de Datos
+
+Antes de cargar los datos en InfluxDB, se realiza una transformación crítica para enriquecer el dataset con metadatos necesarios para las consultas posteriores. La función `preparar_csv_para_influx()` añade las siguientes columnas:
+
+- **measurement**: Tipo de actividad (Run, Cycling, Swimming) - se utilizará como nombre de la tabla en InfluxDB
+- **usuario**: Identificador del atleta (Alba o Alonso)
+- **id_actividad**: ID único de la actividad en Strava
+- **tipo_actividad**: Clasificación de la actividad
+
+Estas columnas se configurarán como **tags** en InfluxDB, lo que permite realizar consultas eficientes filtradas por usuario o actividad.
+
+## Variables Disponibles en el Dataset
+
+El dataset final contiene las siguientes variables para cada segundo de la actividad:
+
+| Variable | Descripción | Unidad | Tipo |
+|----------|-------------|--------|------|
+| `timestamp_real` | Timestamp absoluto | DateTime | Field |
+| `time` | Tiempo relativo desde inicio | segundos | Field |
+| `distance` | Distancia acumulada | metros | Field |
+| `latitude` | Latitud GPS | grados | Field |
+| `longitude` | Longitud GPS | grados | Field |
+| `altitude` | Altitud | metros | Field |
+| `velocity_smooth` | Velocidad suavizada | m/s | Field |
+| `heartrate` | Frecuencia cardíaca | bpm | Field |
+| `cadence` | Cadencia | spm/rpm | Field |
+| `watts` | Potencia (si disponible) | W | Field |
+| `temp` | Temperatura | °C | Field |
+| `grade_smooth` | Pendiente | % | Field |
+| `usuario` | Identificador del usuario | - | Tag |
+| `id_actividad` | ID de la actividad | - | Tag |
+| `tipo_actividad` | Tipo de actividad | - | Tag |
+
+## Carga en InfluxDB
+
+InfluxDB es una base de datos de series temporales optimizada para datos con timestamps y alta frecuencia de escritura. Utilizamos **InfluxDB Cloud (v3)** con el cliente `influxdb_client_3`.
+
+### Configuración de la Conexión
+
+La conexión a InfluxDB requiere:
+
+- **Host**: URL del servidor InfluxDB Cloud
+- **Token**: Token de autenticación con permisos de escritura
+- **Organización**: Nombre de la organización en InfluxDB
+- **Database**: Nombre del bucket/database donde se almacenarán los datos
+
+Todas estas credenciales se almacenan en variables de entorno por seguridad.
+
+### Proceso de Carga
+
+La función `subir_a_influxdb()` realiza la carga utilizando el método `write_file()`:
+
+```python
+client = InfluxDBClient3(host=host, token=token, org=org, database=database)
+
+client.write_file(
+    file=archivo_csv,
+    tag_columns=["measurement", "usuario", "id_actividad", "tipo_actividad"],
+    timestamp_column="timestamp_real",
+    data_format="csv"
+)
+```
+
+**Puntos clave del proceso:**
+
+- Se especifican las columnas que funcionarán como **tags** (índices) para optimizar las consultas
+- Se indica la columna de timestamp para el eje temporal
+- El measurement (tipo de actividad) se usa como nombre de la tabla
+
+### Ventajas de esta Arquitectura
+
+1. **Escalabilidad**: InfluxDB está optimizado para series temporales con millones de puntos
+2. **Consultas eficientes**: Los tags permiten filtrar rápidamente por usuario o actividad
+3. **Downsampling**: Soporte nativo para agregaciones temporales (medias móviles, resúmenes por minuto, etc.)
+4. **Flexibilidad**: Permite consultas personalizadas que van más allá de lo que ofrece Strava
+
+# Análisis de Datos: Consultas sobre Actividades Deportivas
+
+A continuación se presentan las consultas realizadas sobre los datos almacenados en InfluxDB. Cada sección incluye la justificación de la consulta, el código SQL utilizado y el análisis de los resultados.
+
+Para comenzar, nos conectamos a la base de datos InfluxDB utilizando el cliente `influxdb_client_3` y a través de las credenciales almacenadas en variables de entorno:
 
 ```{python}
-# Importar librerías necesarias
-# import influxdb_client
-# from influxdb_client.client.query_api import QueryApi
-# import pandas as pd
-# import plotly.express as px
+# conexión a la base de datos InfluxDB
+from influxdb_client_3 import InfluxDBClient3
+import os
+
+client = InfluxDBClient3(
+    host=os.getenv("INFLUX_HOST"),
+    token=os.getenv("INFLUX_TOKEN"),
+    org=os.getenv("INFLUX_ORG"),
+    database=os.getenv("INFLUX_DATABASE")
+)
+
+# Permitir la visualización completa de los DataFrames en Pandas
+import pandas as pd
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', None)
 ```
 
-# Consultas Realizadas
+## Resumen Básico de la Carrera
+A través de esta primera consulta, el objetivo es obtener un resumen básico de las actividades de carrera almacenadas en la base de datos. Esto incluye métricas como la distancia total, el tiempo total, la frecuencia cardíaca media y máxima, entre otras.
 
-## Consulta 1: [Título de la consulta]
-
-### Descripción
-Descripción de qué pretende analizar esta consulta.
-
-### Código Flux
-```flux
-# Aquí irá tu consulta en Flux
-```
-
-### Resultados
-Análisis e interpretación de los resultados.
-
-### Visualización
 ```{python}
-# Código para visualizar los resultados
+# Consulta SQL. Formato básico a utilizar
+query = """
+SELECT * 
+FROM "Run"
+"""
+table = client.query(query=query)
+df = table.to_pandas()
 ```
 
----
 
-## Consulta 2: [Título de la consulta]
+## Calcular Zonas de Entrenamiento
 
-### Descripción
-Descripción de qué pretende analizar esta consulta.
+## Calcular la Eficiencia Aeróbica
 
-### Código Flux
-```flux
-# Aquí irá tu consulta en Flux
-```
+## Análisis de FC, Cadencia y Velocidad mediante Ventanas Móviles
 
-### Resultados
-Análisis e interpretación de los resultados.
+## Análisis de Variabilidad de Frecuencia Cardíaca (HRV Proxy)
 
-### Visualización
+## Correlación entre Pendiente y Esfuerzo Cardíaco
+
+
+
+# Cerrar la conexión a InfluxDB
+
+
 ```{python}
-# Código para visualizar los resultados
+client.close()
 ```
-
----
-
-## Consulta 3: [Título de la consulta]
-
-### Descripción
-Descripción de qué pretende analizar esta consulta.
-
-### Código Flux
-```flux
-# Aquí irá tu consulta en Flux
-```
-
-### Resultados
-Análisis e interpretación de los resultados.
-
-### Visualización
-```{python}
-# Código para visualizar los resultados
-```
-
----
-
-## Consulta 4: [Título de la consulta]
-
-### Descripción
-Descripción de qué pretende analizar esta consulta.
-
-### Código Flux
-```flux
-# Aquí irá tu consulta en Flux
-```
-
-### Resultados
-Análisis e interpretación de los resultados.
-
-### Visualización
-```{python}
-# Código para visualizar los resultados
-```
-
----
-
-# Conclusiones
-
-Resumen de los hallazgos principales y conclusiones del análisis.
-
-# Referencias
-
-- [Documentación de Strava API](https://developers.strava.com/)
-- [Documentación de InfluxDB](https://docs.influxdata.com/)
