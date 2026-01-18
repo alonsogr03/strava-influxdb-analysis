@@ -212,9 +212,9 @@ df = table.to_pandas()
 
 ## Análisis de Variabilidad de Frecuencia Cardíaca (HRV Proxy)
 
-## Correlación entre Pendiente y Esfuerzo Cardíaco
+## Correlación entre Pendiente y Essfuerzo Cardíaco
 
-
+## Estimación de la frecuencia cardíaca máxima de los atletas.
 
 # Cerrar la conexión a InfluxDB
 
