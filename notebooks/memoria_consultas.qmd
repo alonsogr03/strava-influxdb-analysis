@@ -191,33 +191,131 @@ pd.set_option('display.max_rows', None)
 ```
 
 ## Resumen Básico de la Carrera
+
 A través de esta primera consulta, el objetivo es obtener un resumen básico de las actividades de carrera almacenadas en la base de datos. Esto incluye métricas como la distancia total, el tiempo total, la frecuencia cardíaca media y máxima, entre otras.
 
+Comenzamos extrayendo el número total de actividades y la lista de actividades de cada corredor:
+
 ```{python}
-# Consulta SQL. Formato básico a utilizar
 query = """
-SELECT * 
+SELECT DISTINCT usuario, id_actividad
 FROM "Run"
+ORDER BY usuario
 """
 table = client.query(query=query)
 df = table.to_pandas()
+
+print(f"En total, se han realizado {df.shape[0]} actividades")
+print(f"Lista de actividades")
+df
 ```
 
+A continuación vamos a visualizar datos globales de ambos correrdores:
+
+```{python}
+query= """
+SELECT usuario, 
+id_actividad, 
+MAX(distance) as Distancia_Total, 
+ROUND(AVG(heartrate),2) as FC_Media, 
+MIN(time) as Fecha_Inicio, MAX(time) as Fecha_Fin, 
+date_part('epoch', MAX(time)) - date_part('epoch', MIN(time)) as duracion_segundos,
+((date_part('epoch', MAX(time)) - date_part('epoch', MIN(time)))/60.0) / (MAX(distance)/1000.0) as ritmo_min_km
+from "Run"
+GROUP BY usuario, id_actividad
+ORDER BY Distancia_Total DESC
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+
+def decimal_a_ritmo(valor_decimal):
+    if pd.isna(valor_decimal) or valor_decimal == float('inf'):
+        return "0:00"
+    
+    minutos = int(valor_decimal) # Coge el 5 de 5.5
+    segundos = (valor_decimal - minutos) * 60 # Coge el 0.5 y multiplica por 60 = 30
+    
+    # Formateamos para que segundos siempre tenga 2 cifras (ej. 05)
+    return f"{minutos}:{int(segundos):02d}"
+
+# 3. Aplicamos la función
+df['ritmo_min_km'] = df['ritmo_min_km'].apply(decimal_a_ritmo)
+df
+```
+
+Usamos date_part ('epoch') que significa, segundos totales desde 1970 hasta el mínimo y máixmo de los timestamps de nuestra BBDD.
+
+A continuación calculamos, para cada usuario, el número de actividades, la distancia total realizada y la duración total en minutos
+
+```{python}
+query = """
+SELECT  usuario, COUNT(*) as Actividades_Totales, SUM(distancia_total)/1000 as km_totales, SUM(duracion_segundos) as duracion_total
+FROM (
+SELECT usuario, 
+id_actividad, 
+MAX(distance) as Distancia_Total, 
+date_part('epoch', MAX(time)) - date_part('epoch', MIN(time)) as duracion_segundos,
+from "Run"
+GROUP BY usuario, id_actividad
+ORDER BY Distancia_Total DESC
+)
+GROUP BY usuario
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+
+```
+
+(aquí se han usado consultas anidadas)
 
 ## Calcular Zonas de Entrenamiento
+Aquí habría que: 
+1. Hacer una tabla con una ventana de 5/10 segundos y calcular la frecuencia suavizada y luego agrupar, con un count (por tener 1s por cada segundo de actividad) los segundos en cada zona :)
+
+VENTANA FIJA
+
+```{python}
+
+#1. Seleccionamos una actividad donde queramos calcularlo: 
+id_actividad = 16843447622
+query = f"""
+SELECT * 
+FROM "Run"
+WHERE id_actividad = {id_actividad}
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+
+```
 
 ## Calcular la Eficiencia Aeróbica
 
+Jugamos con la velocity_smooth (ya suavizada) y el heartrate suavizando en intervalos de 5/10s (como el ejemplo anteiror)
+
+VENTANA MÓVIL
+
+## Comparar EF medio entre actividades
+
+Jugar igual con la velocidad y hearrate suavizado y calcular EF en distintas actividades :)
+
+
 ## Análisis de FC, Cadencia y Velocidad mediante Ventanas Móviles
+Análogo y hacer gráficas con ventanas móviles de la velocidad (ya suaviazada), la cadencia y la FC. 
 
-## Análisis de Variabilidad de Frecuencia Cardíaca (HRV Proxy)
 
-## Correlación entre Pendiente y Essfuerzo Cardíaco
+## Ritmo ajustado a la pendiente
+Usar grade_smooth
 
-## Estimación de la frecuencia cardíaca máxima de los atletas.
+Ritmos totales, mínimo y máximo por un lado
+Gráfica del ritmo ajustado a lo largo de un entreno
+
+## Cálculo de la fc máxima observada
+O estimación, o cálculo del intervalo de X segundos donde se haya alcanzado la fc máxima
+
 
 # Cerrar la conexión a InfluxDB
-
 
 ```{python}
 client.close()
