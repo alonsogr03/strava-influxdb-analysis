@@ -182,12 +182,6 @@ def main():
     
     print(f"\n✅ Usuario seleccionado: {usuario}")
     
-    if usuario == 'Alba':
-        print("\n" + "🎄" * 30)
-        print("   Hola Alba, soy Alonso!")
-        print("   🎅 ¡Feliz Navidad! 🎅")
-        print("   Seguramente esté pensando en el gofre que me debes :)")
-        print("🎄" * 30 + "\n")
     
     # Configuración de credenciales desde variables de entorno
     usuarios_config = {

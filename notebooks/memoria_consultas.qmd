@@ -6,6 +6,9 @@ author:
 date: today
 format:
   html:
+    code-fold: true       
+    code-summary: "Mostrar código" 
+    code-tools: true     
     page-layout: full  
     css: style.css
     embed-resources: true
@@ -22,13 +25,13 @@ abstract: |
 
 En el contexto actual del análisis deportivo, la capacidad de centralizar, procesar y explotar datos biométricos y de posicionamiento es fundamental para evaluar el rendimiento. Este proyecto tiene como objetivo principal la creación de una arquitectura de datos escalable para el almacenamiento y análisis de actividades deportivas de carrera.
 
-El proyecto aborda la problemática de la dispersión de datos en plataformas de terceros (como Strava) mediante la implementación de un proceso **ETL (Extract, Transform, Load)** propio. Hemos diseñado un sistema que permite a dos usuarios diferentes (Alba y Alonso) extraer sus actividades con granulaidad de segundo (series temporales), normalizarlas y almacenarlas en una base de datos **InfluxDB**. Esto nos permite superar las limitaciones de análisis de las aplicaciones comerciales y realizar consultas personalizadas sobre variables críticas como la frecuencia cardíaca, la potencia estimada, la velocidad y la pendiente.
+El proyecto aborda la problemática de la dispersión de datos en plataformas de terceros (como Strava) mediante la implementación de un proceso **ETL (Extract, Transform, Load)** propio. Hemos diseñado un sistema que permite a dos usuarios diferentes (Alba y Alonso) extraer sus actividades con granularidad de segundo (series temporales), normalizarlas y almacenarlas en una base de datos **InfluxDB**. Esto nos permite superar las limitaciones de análisis de las aplicaciones comerciales y realizar consultas personalizadas sobre variables críticas como la frecuencia cardíaca, la potencia estimada, la velocidad y la pendiente.
 
 # Arquitectura del Sistema y Proceso ETL
 
 ## Extracción de Datos desde la API de Strava
 
-El proceso de extracción de datos comienza con la autenticación en la **API de Strava** mediante el protocolo OAuth 2.0. Para ello, cada usuario (Alba y Alonso) dispone de credenciales únicas almacenadas de forma segura en un archivo `.env` (no versionado en el repositorio). Este archivo contiene:
+El proceso de extracción de datos comienza con la autenticación en la **API de Strava** mediante el protocolo OAuth 2.0. Para ello, cada usuario (Alba y Alonso) dispone de credenciales únicas almacenadas de forma segura en un archivo `.env`. Este archivo contiene:
 
 - **Client ID**: Identificador de la aplicación registrada en Strava
 - **Client Secret**: Clave secreta de la aplicación
@@ -97,7 +100,7 @@ Antes de cargar los datos en InfluxDB, se realiza una transformación crítica p
 - **measurement**: Tipo de actividad (Run, Cycling, Swimming) - se utilizará como nombre de la tabla en InfluxDB
 - **usuario**: Identificador del atleta (Alba o Alonso)
 - **id_actividad**: ID único de la actividad en Strava
-- **tipo_actividad**: Clasificación de la actividad
+- **tipo_actividad**: Clasificación de la actividad (Run, Cycling, Swimming). Cabe destacar que para este proyecto sólo se han cargado actividades de tipo `Run`
 
 Estas columnas se configurarán como **tags** en InfluxDB, lo que permite realizar consultas eficientes filtradas por usuario o actividad.
 
@@ -108,7 +111,6 @@ El dataset final contiene las siguientes variables para cada segundo de la activ
 | Variable | Descripción | Unidad | Tipo |
 |----------|-------------|--------|------|
 | `timestamp_real` | Timestamp absoluto | DateTime | Field |
-| `time` | Tiempo relativo desde inicio | segundos | Field |
 | `distance` | Distancia acumulada | metros | Field |
 | `latitude` | Latitud GPS | grados | Field |
 | `longitude` | Longitud GPS | grados | Field |
@@ -117,7 +119,6 @@ El dataset final contiene las siguientes variables para cada segundo de la activ
 | `heartrate` | Frecuencia cardíaca | bpm | Field |
 | `cadence` | Cadencia | spm/rpm | Field |
 | `watts` | Potencia (si disponible) | W | Field |
-| `temp` | Temperatura | °C | Field |
 | `grade_smooth` | Pendiente | % | Field |
 | `usuario` | Identificador del usuario | - | Tag |
 | `id_actividad` | ID de la actividad | - | Tag |
@@ -153,20 +154,10 @@ client.write_file(
 )
 ```
 
-**Puntos clave del proceso:**
-
-- Se especifican las columnas que funcionarán como **tags** (índices) para optimizar las consultas
-- Se indica la columna de timestamp para el eje temporal
-- El measurement (tipo de actividad) se usa como nombre de la tabla
-
-### Ventajas de esta Arquitectura
-
-1. **Escalabilidad**: InfluxDB está optimizado para series temporales con millones de puntos
-2. **Consultas eficientes**: Los tags permiten filtrar rápidamente por usuario o actividad
-3. **Downsampling**: Soporte nativo para agregaciones temporales (medias móviles, resúmenes por minuto, etc.)
-4. **Flexibilidad**: Permite consultas personalizadas que van más allá de lo que ofrece Strava
 
 # Análisis de Datos: Consultas sobre Actividades Deportivas
+
+Durante los últimos 30 días se ha ido ejecutando el anterior proceso para ir cargando en la base de datos, las actividades realizadas. 
 
 A continuación se presentan las consultas realizadas sobre los datos almacenados en InfluxDB. Cada sección incluye la justificación de la consulta, el código SQL utilizado y el análisis de los resultados.
 
@@ -245,7 +236,8 @@ df
 
 Usamos date_part ('epoch') que significa, segundos totales desde 1970 hasta el mínimo y máximo de los timestamps de nuestra BBDD.
 
-Se prosigue calculando, para cada usuario, el número de actividades, la distancia total realizada y la duración total en minutos.
+
+Se prosigue calculando **datos globales** para cada usuario, el número de actividades, la distancia total realizada y la duración total en minutos. 
 
 Para ello se usa una consulta anidada, ya que se necesitan métricas que no existían originalmente sino que se han obtenido en la consulta anterior.
 
@@ -268,6 +260,8 @@ df = table.to_pandas()
 df
 
 ```
+
+Observamos que Alba ha realizado más actividades y más kilómetros totales en menos tiempo. 
 
 ## Calcular Zonas de Entrenamiento
 
@@ -402,7 +396,7 @@ ORDER BY usuario, id_actividad
 """
 table = client.query(query=query)
 df = table.to_pandas()
-df
+df.head()
 ```
 
 De la consulta se extrae la siguiente gráfica:
@@ -753,48 +747,38 @@ import seaborn as sns
 import pandas as pd
 import numpy as np
 
-# --- 1. Preparación de Datos ---
-# Asegurarnos de que 'time' es datetime (si no lo es ya)
-df['time'] = pd.to_datetime(df['time'])
 
-# Filtrar valores extremos (ruido del GPS) para que la gráfica no se rompa
-# Ej: Quitamos ritmos más lentos de 20:00 min/km o más rápidos de 2:00 min/km
+df['time'] = pd.to_datetime(df['time'])
 mask = (df['ritmo_min_km'] < 20) & (df['ritmo_min_km'] > 2)
 df_clean = df.loc[mask].copy()
 
-# Opcional: Suavizar las líneas (Rolling Mean) para que se vea más 'profesional' y menos ruidosa
-window = 10  # Suavizado de 10 segundos (ajustar según gusto)
 df_clean['ritmo_smooth'] = df_clean['ritmo_min_km'].rolling(window, center=True).mean()
 df_clean['gap_smooth'] = df_clean['ritmo_min_km_ajustado'].rolling(window, center=True).mean()
 
-# --- 2. Configuración de Estilo "Profesional" ---
-sns.set_theme(style="whitegrid", context="talk") # Fondo limpio con rejilla suave
+
+sns.set_theme(style="whitegrid", context="talk")
 plt.figure(figsize=(14, 6))
 
-# Colores corporativos/profesionales
-color_real = "#95a5a6"  # Gris (Ritmo Real - contexto)
-color_gap = "#e74c3c"   # Rojo Intenso (GAP - dato destacado)
 
+color_real = "#000000ff"  
+color_gap = "#e74c3c"   
 # --- 3. Graficado ---
-# Ritmo Real (Fondo)
+# Ritmo Real
 plt.plot(df_clean['time'], df_clean['ritmo_smooth'], 
          label='Ritmo Real', color=color_real, alpha=0.6, linewidth=1.5)
 
-# GAP (Principal)
+# GAP
 plt.plot(df_clean['time'], df_clean['gap_smooth'], 
          label='Ritmo Ajustado (GAP)', color=color_gap, linewidth=2.5)
 
 # Rellenar la diferencia para resaltar el esfuerzo en subidas
 plt.fill_between(df_clean['time'], df_clean['ritmo_smooth'], df_clean['gap_smooth'], 
-                 where=(df_clean['gap_smooth'] < df_clean['ritmo_smooth']), # Donde GAP es más rápido (subida)
+                 where=(df_clean['gap_smooth'] < df_clean['ritmo_smooth']), 
                  color=color_gap, alpha=0.1, interpolate=True)
 
-# --- 4. Formateo de Ejes ---
 
-# Eje Y Invertido (Más rápido arriba)
 plt.gca().invert_yaxis()
 
-# Formatear Eje Y para mostrar minutos:segundos en lugar de decimales
 def decimal_to_mmss(x, pos):
     mins = int(x)
     secs = int((x - mins) * 60)
@@ -802,19 +786,18 @@ def decimal_to_mmss(x, pos):
 
 plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(decimal_to_mmss))
 
-# Formatear Eje X (Tiempo)
+
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
-# Títulos y Leyenda
+
 plt.title("Comparativa de Esfuerzo: Ritmo Real vs. GAP", fontsize=16, pad=20, weight='bold')
 plt.ylabel("Ritmo (min/km)", fontsize=12)
 plt.xlabel("Hora", fontsize=12)
 plt.legend(frameon=True, loc='upper right')
 
-# Límites limpios (Opcional: Ajustar según tus datos)
-# plt.ylim(7, 3) # Ejemplo: mostrar solo entre 7:00 y 3:00 min/km
 
-sns.despine(left=True, bottom=True) # Quitar bordes innecesarios
+
+sns.despine(left=True, bottom=True) 
 plt.tight_layout()
 plt.show()
 
@@ -849,6 +832,8 @@ df = table.to_pandas()
 df
 ```
 
+Observamos que la FCMÁX observada para Alba es de 198 ppm mientras que Alonso tuvo 177 ppm. 
+
 ## Mapa de actividades
 
 Podemos visualizar el recorrido de una actividad. Para ello: 
@@ -861,7 +846,7 @@ import branca.colormap as cm
 # Recogemos la actividad de la BBDD:
 id_actividad = 16967764621
 
-# Seleccionamos todo de esa actividad:
+
 query = f"""
 SELECT *
 from "Run"
@@ -870,62 +855,57 @@ WHERE id_actividad = {id_actividad}
 table = client.query(query = query)
 df = table.to_pandas()
 
-# Lista de coordenadas:
+
 ruta_coords = list(zip(df['latitude'], df['longitude']))
 
-# Calculamos el centro del mapa (la media de tus coordenadas)
+
 centro_mapa = [df['latitude'].mean(), df['longitude'].mean()]
 
-# Creamos el mapa base. zoom_start depende de lo larga que sea la ruta
+
 m = folium.Map(location=centro_mapa, zoom_start=14, tiles='cartodbpositron')
 
-# 2. Crear la Escala de Colores (El gradiente estilo Strava)
+
 colormap = cm.LinearColormap(colors=['red', 'yellow', 'green'],
                              vmin=df['velocity_smooth'].min(),
                              vmax=df['velocity_smooth'].max(), 
                              caption=f'Intensidad: Velocity_smooth')
 
 
-# 3. Dibujar la ruta coloreada
-# Iteramos por los puntos de la ruta, de dos en dos, para crear segmentos
+
 for i in range(len(ruta_coords) - 1):
     punto_A = ruta_coords[i]
     punto_B = ruta_coords[i+1]
     
-    # El valor para colorear este segmento es el del punto inicial A
+
     valor_actual = df.iloc[i]['velocity_smooth']
-    
-    # Obtenemos el color correspondiente a ese valor
+
     color_segmento = colormap(valor_actual)
     
-    # Dibujamos la pequeña línea que une A con B
+
     folium.PolyLine(
         locations=[punto_A, punto_B],
         color=color_segmento,
-        weight=5,         # Grosor de la línea (Strava usa líneas gruesas)
-        opacity=0.8       # Un poco de transparencia queda elegante
+        weight=5,         
+        opacity=0.8       
     ).add_to(m)
 
 
-# 4. Añadir detalles finales "Pro"
-# Añadir la leyenda de colores al mapa
 m.add_child(colormap)
 
-# Marcador de Inicio (Icono verde de "play")
+
 folium.Marker(
     location=ruta_coords[0],
     popup="Inicio",
     icon=folium.Icon(color='green', icon='play', prefix='fa') # fa = fontawesome icons
 ).add_to(m)
 
-# Marcador de Fin (Icono rojo de "stop" o bandera)
+
 folium.Marker(
     location=ruta_coords[-1],
     popup="Fin",
     icon=folium.Icon(color='red', icon='flag', prefix='fa')
 ).add_to(m)
 
-# Añadir control para cambiar a vista satélite
 folium.TileLayer('esri.worldimagery', name='Satélite').add_to(m)
 folium.LayerControl().add_to(m)
 m
@@ -951,8 +931,7 @@ df
 ```
 
 ```{python}
-# Ordenamos el DataFrame para el podio visual (2º, 1º, 3º)
-# Esto es crucial para que la barra más alta quede en el centro.
+
 if len(df) == 3:
     # Si tenemos 3 resultados, reordenamos para el podio visual
     df_podio = df.iloc[[1, 0, 2]].reset_index(drop=True)
@@ -961,27 +940,25 @@ elif len(df) == 2: # Por si solo hay 2 resultados
 else: # Si hay 1 resultado
     df_podio = df
 
-# Definir los colores de las medallas (Plata, Oro, Bronce)
-# Se asignan al índice del df_podio reordenado
+
 colores_medallas = ['#C0C0C0', '#FFD700', '#CD7F32'] if len(df_podio) == 3 else ['#FFD700', '#C0C0C0'] if len(df_podio) == 2 else ['#FFD700']
 
 plt.figure(figsize=(10, 6))
 
-# Crear las barras. Usamos el índice como etiqueta del eje X para que sean 3 barras separadas.
-# Luego pondremos el nombre del usuario encima/dentro
+
 bars = plt.bar(range(len(df_podio)), df_podio['distancia_max'], color=colores_medallas, edgecolor='black')
 
-# Añadir etiquetas de distancia y nombre del usuario
+
 for i, bar in enumerate(bars):
     yval = bar.get_height()
     usuario = df_podio.loc[i, 'usuario']
     distancia = df_podio.loc[i, 'distancia_max']
     
-    # Etiqueta de la distancia encima de la barra
+    
     plt.text(bar.get_x() + bar.get_width()/2, yval + 0.1, 
              f'{distancia:.2f} km', ha='center', va='bottom', fontweight='bold', fontsize=12)
     
-    # Etiqueta del usuario dentro de la barra (con posición)
+    
     puesto = ""
     if len(df_podio) == 3:
         if i == 1: puesto = "1º\n" # Oro (centro)
@@ -1004,11 +981,11 @@ plt.ylim(0, df['distancia_max'].max() * 1.2)
 
 # Eliminar el eje X para que no muestre 0, 1, 2
 plt.xticks([]) 
-# Quitar líneas de los ejes para que parezca un podio limpio
+
 plt.gca().spines['top'].set_visible(False)
 plt.gca().spines['right'].set_visible(False)
 plt.gca().spines['left'].set_visible(False)
-plt.yticks([]) # Ocultar números del eje Y
+plt.yticks([])
 
 plt.tight_layout()
 plt.show()
@@ -1032,34 +1009,33 @@ df
 ```{python}
 import matplotlib.pyplot as plt
 
-# 1. Reordenar el DataFrame para el efecto visual de podio (2º, 1º, 3º)
+
 if len(df) == 3:
     df_podio = df.iloc[[1, 0, 2]].reset_index(drop=True)
 else:
     df_podio = df.sort_values('eficiencia_aerobica_sesion', ascending=False)
 
-# 2. Configuración de colores (Plata, Oro, Bronce)
+
 colores_medallas = ['#C0C0C0', '#FFD700', '#CD7F32']
 
 plt.figure(figsize=(10, 7))
 
-# 3. Dibujar las barras individuales
+
 indices = range(len(df_podio))
 bars = plt.bar(indices, df_podio['eficiencia_aerobica_sesion'], 
                color=colores_medallas[:len(df_podio)], edgecolor='black', linewidth=1.2)
 
-# 4. Añadir la información dentro y sobre las barras
+
 for i, bar in enumerate(bars):
     yval = bar.get_height()
     usuario = df_podio.loc[i, 'usuario']
     
-    # Etiqueta del valor exacto encima de la barra
+
     plt.text(bar.get_x() + bar.get_width()/2, yval + (yval * 0.02), 
              f'{yval:.4f}\nm/latido', ha='center', va='bottom', 
              fontweight='bold', fontsize=11, color='#2c3e50')
     
-    # Determinar el puesto según el valor original
-    # (Comparamos con el DF original que está ordenado de mayor a menor)
+
     if yval == df['eficiencia_aerobica_sesion'].iloc[0]:
         puesto = "1º"
     elif yval == df['eficiencia_aerobica_sesion'].iloc[1]:
@@ -1067,17 +1043,16 @@ for i, bar in enumerate(bars):
     else:
         puesto = "3º"
 
-    # Texto dentro de la barra: Puesto y Nombre del Usuario
     plt.text(bar.get_x() + bar.get_width()/2, yval / 2, 
              f"{puesto}\n\n{usuario}", 
              ha='center', va='center', color='black', 
              fontsize=14, fontweight='black')
 
-# 5. Estética final estilo "Clean Podium"
-plt.title('Podio de Eficiencia Aeróbica (Media por Sesión)', fontsize=16, pad=30, fontweight='bold')
-plt.ylim(0, df['eficiencia_aerobica_sesion'].max() * 1.3) # Espacio para las etiquetas
 
-# Limpieza de ejes
+plt.title('Podio de Eficiencia Aeróbica (Media por Sesión)', fontsize=16, pad=30, fontweight='bold')
+plt.ylim(0, df['eficiencia_aerobica_sesion'].max() * 1.3) 
+
+
 plt.xticks([]) # Sin etiquetas en el eje X
 plt.yticks([]) # Sin números en el eje Y
 plt.gca().spines['top'].set_visible(False)
