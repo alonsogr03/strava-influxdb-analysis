@@ -243,9 +243,11 @@ df['ritmo_min_km'] = df['ritmo_min_km'].apply(decimal_a_ritmo)
 df
 ```
 
-Usamos date_part ('epoch') que significa, segundos totales desde 1970 hasta el mínimo y máixmo de los timestamps de nuestra BBDD.
+Usamos date_part ('epoch') que significa, segundos totales desde 1970 hasta el mínimo y máximo de los timestamps de nuestra BBDD.
 
-A continuación calculamos, para cada usuario, el número de actividades, la distancia total realizada y la duración total en minutos
+Se prosigue calculando, para cada usuario, el número de actividades, la distancia total realizada y la duración total en minutos.
+
+Para ello se usa una consulta anidada, ya que se necesitan métricas que no existían originalmente sino que se han obtenido en la consulta anterior.
 
 ```{python}
 query = """
@@ -267,13 +269,11 @@ df
 
 ```
 
-(aquí se han usado consultas anidadas)
-
 ## Calcular Zonas de Entrenamiento
 
 En esta consulta, vamos a seleccionar una actividad, en este caso la del atleta `Alba`, la actividad `16843447622` y vamos a calcular el tiempo en minutos dedicados a cada zona de entrenamiento. 
 
-Para ello, vamos a calcular la frecuencia cardiaca media durante intervalos de 10 segundos en ventanas fijas. Y tras ello, calcularemos las zonas. Para ello:
+Para ello, vamos a calcular la frecuencia cardíaca media durante intervalos de 10 segundos en ventanas fijas. Seguidamente, calcularemos las zonas como aquí se presenta:
 
 ```{python}
 #1. Seleccionamos la actividad donde queramos calcularlo: 
@@ -328,12 +328,61 @@ df['minutos_en_zona'] = df['minutos_en_zona'].apply(decimal_a_minutos_segundos)
 df
 ```
 
+Según las zonas establecidas por la frecuencia cardíaca, la deportista pasó la mayoría del tiempo en zona 5, la más intensa, definida por encima de las 171 pulsaciones por minuto.
+
+Se grafican ahora los resultados de esta consulta:
+
+```{python}
+import matplotlib.pyplot as plt
+
+# 1. Preparar los datos
+# Como el DF actual tiene strings ("05min:20s"), extraemos los valores para el eje Y
+# Es mejor usar el dataframe antes del formateo, pero si ya lo tienes así, 
+# podemos usar una lógica simple para la gráfica:
+zonas = df['zonas_entrenamiento'].tolist()
+# Convertimos el texto de nuevo a minutos decimales para la altura de las barras
+tiempos_texto = df['minutos_en_zona'].tolist()
+tiempos_num = [int(t.split('min')[0]) + int(t.split(':')[1].replace('s',''))/60 for t in tiempos_texto]
+
+# 2. Definir colores estándar de zonas de potencia/pulso
+colores = {
+    'Z1': '#3498db', # Azul claro
+    'Z2': '#2ecc71', # Verde
+    'Z3': '#f1c40f', # Amarillo
+    'Z4': '#e67e22', # Naranja
+    'Z5': '#e74c3c'  # Rojo
+}
+colores_barras = [colores.get(z, '#bdc3c7') for z in zonas]
+
+# 3. Crear la gráfica
+plt.figure(figsize=(10, 6))
+bars = plt.bar(zonas, tiempos_num, color=colores_barras, edgecolor='black', alpha=0.8)
+
+# 4. Añadir las etiquetas de tiempo encima de cada barra
+for bar, texto in zip(bars, tiempos_texto):
+    yval = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width()/2, yval + 0.1, texto, 
+             ha='center', va='bottom', fontweight='bold')
+
+# Personalización
+plt.title(f'Distribución de Intensidad por Zonas - Actividad {id_actividad}', fontsize=14, pad=15)
+plt.xlabel('Zonas de Entrenamiento', fontsize=12)
+plt.ylabel('Tiempo (Minutos)', fontsize=12)
+plt.grid(axis='y', linestyle='--', alpha=0.4)
+
+# Eliminar bordes innecesarios
+plt.gca().spines['top'].set_visible(False)
+plt.gca().spines['right'].set_visible(False)
+
+plt.tight_layout()
+plt.show()
+```
 
 ## Calcular la Eficiencia Aeróbica
 
-En esta consulta se busca extraer la eficiencia aeróbica (EF) a lo largo de la sesión. 
+En esta consulta se busca extraer la eficiencia aeróbica (EfA) a lo largo de la sesión. 
 
-La eficiencia aeróbica es un indicador de rendimiento que mide la carga interna que la ha supuesto al deportista una determinada carga externa. En otras palabras, indica el esfuerzo real que ha llevado a cabo un corredor para alcanzar un resultado objetivo. 
+La eficiencia aeróbica es un indicador de rendimiento que mide la carga interna que le ha supuesto al deportista una determinada carga externa. En otras palabras, indica el esfuerzo real que ha llevado a cabo un corredor para alcanzar un resultado objetivo. 
 
 Con los datos de los que se dispone, se divide la velocidad (carga externa) entre la frecuencia cardíaca (carga interna). Mayores cifras de eficiencia aeróbica indican un mejor estado de forma.
 
@@ -359,6 +408,8 @@ df
 De la consulta se extrae la siguiente gráfica:
 
 ```{python}
+import matplotlib.pyplot as plt
+
 # Asegurar que el tiempo sea formato datetime y ordenar
 df['time'] = pd.to_datetime(df['time'])
 df = df.sort_values('time')
@@ -388,11 +439,11 @@ plt.tight_layout()
 plt.show()
 ```
 
-**Falta interpretar gráfica**
+Se observa la evolución de la EfA de toda la sesión `16835006867` del usuario `Alonso`. En el inicio aparece un pico muy alto de eficiencia que sucede por una respuesta desfasada del sistema cardíaco con respecto al comienzo del ejercicio (hay un aumento de intensidad y una frecuencia cardíaca aún muy baja). Este pico se estabiliza alrededor de 0,02 durante el resto de la sesión. El mantenimiento de la EfA durante toda la carrera indica que el ritmo era el adecuado para un entrenamiento de larga duración, en el que se busca un ritmo constante.
 
-## Comparar EF media entre actividades
+## Comparar EfA media entre actividades
 
-Habiendo estudiado la evolución de la EF a lo largo de la sesión, en la actual consulta se ha calculado la EF media de cada sesión y se han comparado ordenando la tabla de mayor a menor valor.
+Habiendo estudiado la evolución de la EfA a lo largo de la sesión, en la actual consulta se ha calculado la EfA media de cada sesión y se han comparado ordenando la tabla de mayor a menor valor.
 
 ```{python}
 query = f"""
@@ -476,7 +527,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-**Falta interpretar la gráfica**
+Los puntos de la gráfica indican la EfA media de cada sesión para ambos usarios. Las líneas de tendencia muestran cómo ha evolucionado esta dicha eficiencia media a lo largo del periodo de entrenamiento, es decir, teniendo en cuenta todas las sesiones realizadas.
 
 ## Análisis de FC, Cadencia y Velocidad mediante Ventanas Móviles
 
@@ -551,7 +602,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-**Falta interpretar gráficas**
+Para las tres medidas se registra un comportamiento parecido. Aparece un aumento exponencial al inicio para estabilizarse durante el resto de la carrera alrededor de 170 ppm.
 
 Análisis de la evolución de la velocidad:
 
@@ -600,7 +651,7 @@ plt.gcf().autofmt_xdate()
 plt.show()
 ```
 
-**Falta interpretar gráfica**
+Se puede ver una velocidad muy estable alrededor de 3 m/s durante toda la actividad con escasas caídas que no llegan a bajar de 2 m/s.
 
 Análisis de la evolución de la cadencia durante la actividad:
 
@@ -651,11 +702,13 @@ plt.tight_layout()
 plt.show()
 ```
 
-**Falta interpretar gráfica**
+Al igual que las otras medidas, la cadencia se mantuvo estable con una ligera tendencia a aumentar. Este aumento puede ser fruto de la fatiga pero esta no fue lo suficientemente notable como para desestabilizar los pasos por minuto. Todas los valores quedan comprendidos entre 80 y 90 pasos por minuto.
 
 ## Ritmo ajustado a la pendiente
 
-Para esta sección, vamos a comparar el ritmo real vs el ritmo ajustado a la pendiente:
+En la carrera a pie en ocasiones la pendiente dificulta de forma notable el mantenimiento del ritmo, obligando a una carrera más lenta a pesar de una carga interna (sensaciones de intensidad) similares e incluso mayores a las que se tenían en terreno plano, afectando directamente al coste energético. 
+
+Teniendo en cuenta que el coste energético se multiplica x 3,6 en pendiente (por 1 metro de ascenso positivo el coste energético es esquivalente a haber recorrido 3,6 metros en llano), en esta sección se va a comparar el ritmo real vs el ritmo ajustado a la pendiente:
 
 ```{python}
 id_actividad = 16843447622
@@ -767,9 +820,11 @@ plt.show()
 
 ```
 
-## Cálculo de la fc máxima observada
+Los numerosos picos y caídas a lo largo de la sesión indican que hubo numerosos ajustes de ritmo debido al desnivel, destacando la caída de ritmo de la hora 10:30, debido a un ascenso más pronunciado.
 
-En este apartado vamos a calcular la frecuencia cardiaca máxima observada. Para ello, vamos a definir ventanas móviles de 10 segundos para calcularlo. La motivación para no usar ventanas fijas es que puedes estar cortando un esfuerzo submáximo que se da del segundo 7 al 13 en dos ventanas distintas, la 6-10 y la 11-15. 
+## Cálculo de la FC máxima observada
+
+En este apartado vamos a calcular la frecuencia cardiaca máxima observada. Para ello, vamos a definir ventanas móviles de 10 segundos. La motivación para no usar ventanas fijas radica en la posibilidad de cortar un esfuerzo submáximo que se da del segundo 7 al 13 en dos ventanas distintas, la 6-10 y la 11-15. 
 
 ```{python}
 query1 = """
@@ -874,6 +929,206 @@ folium.Marker(
 folium.TileLayer('esri.worldimagery', name='Satélite').add_to(m)
 folium.LayerControl().add_to(m)
 m
+```
+
+## Premios por métrica entre corredores
+
+Por último, una vez realizadas las consultas a la base de datos que han permitido obtener métricas reflejando el rendimiento de los deportistas, se pueden hacer consultas que premien los logros de cada uno:
+
+```{python}
+# Podium distancias
+query = f"""
+SELECT usuario,
+MAX(Distance) AS distancia_max
+FROM "Run"
+GROUP BY usuario, id_actividad
+ORDER BY distancia_max DESC 
+LIMIT 3
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+```
+
+```{python}
+# Ordenamos el DataFrame para el podio visual (2º, 1º, 3º)
+# Esto es crucial para que la barra más alta quede en el centro.
+if len(df) == 3:
+    # Si tenemos 3 resultados, reordenamos para el podio visual
+    df_podio = df.iloc[[1, 0, 2]].reset_index(drop=True)
+elif len(df) == 2: # Por si solo hay 2 resultados
+    df_podio = df.iloc[[0,1]].reset_index(drop=True)
+else: # Si hay 1 resultado
+    df_podio = df
+
+# Definir los colores de las medallas (Plata, Oro, Bronce)
+# Se asignan al índice del df_podio reordenado
+colores_medallas = ['#C0C0C0', '#FFD700', '#CD7F32'] if len(df_podio) == 3 else ['#FFD700', '#C0C0C0'] if len(df_podio) == 2 else ['#FFD700']
+
+plt.figure(figsize=(10, 6))
+
+# Crear las barras. Usamos el índice como etiqueta del eje X para que sean 3 barras separadas.
+# Luego pondremos el nombre del usuario encima/dentro
+bars = plt.bar(range(len(df_podio)), df_podio['distancia_max'], color=colores_medallas, edgecolor='black')
+
+# Añadir etiquetas de distancia y nombre del usuario
+for i, bar in enumerate(bars):
+    yval = bar.get_height()
+    usuario = df_podio.loc[i, 'usuario']
+    distancia = df_podio.loc[i, 'distancia_max']
+    
+    # Etiqueta de la distancia encima de la barra
+    plt.text(bar.get_x() + bar.get_width()/2, yval + 0.1, 
+             f'{distancia:.2f} km', ha='center', va='bottom', fontweight='bold', fontsize=12)
+    
+    # Etiqueta del usuario dentro de la barra (con posición)
+    puesto = ""
+    if len(df_podio) == 3:
+        if i == 1: puesto = "1º\n" # Oro (centro)
+        elif i == 0: puesto = "2º\n" # Plata (izquierda)
+        elif i == 2: puesto = "3º\n" # Bronce (derecha)
+    elif len(df_podio) == 2:
+        if i == 0: puesto = "1º\n"
+        elif i == 1: puesto = "2º\n"
+    elif len(df_podio) == 1:
+        puesto = "1º\n"
+
+    plt.text(bar.get_x() + bar.get_width()/2, yval / 2, 
+             f"{puesto}{usuario}", ha='center', va='center', color='black', fontsize=14, fontweight='bold')
+
+
+# Personalización estética
+plt.title('Podio: Las Mejores Distancias', fontsize=16, pad=20)
+plt.ylabel('Distancia (km)')
+plt.ylim(0, df['distancia_max'].max() * 1.2) 
+
+# Eliminar el eje X para que no muestre 0, 1, 2
+plt.xticks([]) 
+# Quitar líneas de los ejes para que parezca un podio limpio
+plt.gca().spines['top'].set_visible(False)
+plt.gca().spines['right'].set_visible(False)
+plt.gca().spines['left'].set_visible(False)
+plt.yticks([]) # Ocultar números del eje Y
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Podium eficiencia
+query = f"""
+SELECT usuario, MIN (time) as fecha,
+AVG(velocity_smooth/heartrate) AS eficiencia_aerobica_sesion
+FROM "Run"
+GROUP BY usuario, id_actividad
+ORDER BY eficiencia_aerobica_sesion DESC
+LIMIT 3
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+```
+
+```{python}
+import matplotlib.pyplot as plt
+
+# 1. Reordenar el DataFrame para el efecto visual de podio (2º, 1º, 3º)
+if len(df) == 3:
+    df_podio = df.iloc[[1, 0, 2]].reset_index(drop=True)
+else:
+    df_podio = df.sort_values('eficiencia_aerobica_sesion', ascending=False)
+
+# 2. Configuración de colores (Plata, Oro, Bronce)
+colores_medallas = ['#C0C0C0', '#FFD700', '#CD7F32']
+
+plt.figure(figsize=(10, 7))
+
+# 3. Dibujar las barras individuales
+indices = range(len(df_podio))
+bars = plt.bar(indices, df_podio['eficiencia_aerobica_sesion'], 
+               color=colores_medallas[:len(df_podio)], edgecolor='black', linewidth=1.2)
+
+# 4. Añadir la información dentro y sobre las barras
+for i, bar in enumerate(bars):
+    yval = bar.get_height()
+    usuario = df_podio.loc[i, 'usuario']
+    
+    # Etiqueta del valor exacto encima de la barra
+    plt.text(bar.get_x() + bar.get_width()/2, yval + (yval * 0.02), 
+             f'{yval:.4f}\nm/latido', ha='center', va='bottom', 
+             fontweight='bold', fontsize=11, color='#2c3e50')
+    
+    # Determinar el puesto según el valor original
+    # (Comparamos con el DF original que está ordenado de mayor a menor)
+    if yval == df['eficiencia_aerobica_sesion'].iloc[0]:
+        puesto = "1º"
+    elif yval == df['eficiencia_aerobica_sesion'].iloc[1]:
+        puesto = "2º"
+    else:
+        puesto = "3º"
+
+    # Texto dentro de la barra: Puesto y Nombre del Usuario
+    plt.text(bar.get_x() + bar.get_width()/2, yval / 2, 
+             f"{puesto}\n\n{usuario}", 
+             ha='center', va='center', color='black', 
+             fontsize=14, fontweight='black')
+
+# 5. Estética final estilo "Clean Podium"
+plt.title('Podio de Eficiencia Aeróbica (Media por Sesión)', fontsize=16, pad=30, fontweight='bold')
+plt.ylim(0, df['eficiencia_aerobica_sesion'].max() * 1.3) # Espacio para las etiquetas
+
+# Limpieza de ejes
+plt.xticks([]) # Sin etiquetas en el eje X
+plt.yticks([]) # Sin números en el eje Y
+plt.gca().spines['top'].set_visible(False)
+plt.gca().spines['right'].set_visible(False)
+plt.gca().spines['left'].set_visible(False)
+plt.gca().spines['bottom'].set_linewidth(2)
+
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Podium ritmo
+query_ritmo = f"""
+SELECT usuario, MIN (time) as fecha,
+FROM (SELECT usuario, 
+id_actividad,
+MIN(time) as Fecha_Inicio, MAX(time) as Fecha_Fin, 
+date_part('epoch', MAX(time)) - date_part('epoch', MIN(time)) as duracion_segundos,
+((date_part('epoch', MAX(time)) - date_part('epoch', MIN(time)))/60.0) / (MAX(distance)/1000.0) as ritmo_min_km
+from "Run"
+GROUP BY usuario, id_actividad
+ORDER BY Distancia_Total DESC
+)
+GROUP BY usuario, id_actividad
+ORDER BY ritmo_min_km ASC
+LIMIT 3
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+
+def decimal_a_minutos_segundos(valor_decimal):
+    # 1. Separamos la parte entera (minutos)
+    minutos = int(valor_decimal)
+    
+    # 2. Tomamos la parte decimal y la multiplicamos por 60 para sacar segundos
+    # Usamos round() para redondear al segundo más cercano y evitar 29.9999
+    segundos = int(round((valor_decimal - minutos) * 60))
+    
+    # 3. Ajuste por si el redondeo nos da 60 segundos
+    if segundos == 60:
+        minutos += 1
+        segundos = 0
+        
+    # 4. Formateamos: :02d significa "número entero de 2 dígitos, rellena con 0 si hace falta"
+    return f"{minutos:02d}min:{segundos:02d}s"
+
+
+# df['minutos_en_zona'] = df['minutos_en_zona'].apply(decimal_a_minutos_segundos)
+
+df
 ```
 
 # Cerrar la conexión a InfluxDB
