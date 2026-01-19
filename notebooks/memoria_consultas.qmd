@@ -279,6 +279,7 @@ VENTANA FIJA
 
 #1. Seleccionamos una actividad donde queramos calcularlo: 
 id_actividad = 16843447622
+
 query = f"""
 SELECT * 
 FROM "Run"
@@ -292,18 +293,327 @@ df
 
 ## Calcular la Eficiencia Aeróbica
 
-Jugamos con la velocity_smooth (ya suavizada) y el heartrate suavizando en intervalos de 5/10s (como el ejemplo anteiror)
+En esta consulta se busca extraer la eficiencia aeróbica (EF) a lo largo de la sesión. 
 
-VENTANA MÓVIL
+La eficiencia aeróbica es un indicador de rendimiento que mide la carga interna que la ha supuesto al deportista una determinada carga externa. En otras palabras, indica el esfuerzo real que ha llevado a cabo un corredor para alcanzar un resultado objetivo. 
 
-## Comparar EF medio entre actividades
+Con los datos de los que se dispone, se divide la velocidad (carga externa) entre la frecuencia cardíaca (carga interna). Mayores cifras de eficiencia aeróbica indican un mejor estado de forma.
 
-Jugar igual con la velocidad y hearrate suavizado y calcular EF en distintas actividades :)
+```{python}
+id_actividad = 16835006867
 
+query = f"""
+SELECT usuario, id_actividad, time,
+  AVG(velocity_smooth/heartrate) OVER (
+    PARTITION BY usuario, id_actividad
+    ORDER BY time
+    RANGE INTERVAL '5 seconds' PRECEDING
+  ) AS eficiencia_aerobica
+FROM "Run"
+WHERE id_actividad = {id_actividad}
+ORDER BY usuario, id_actividad 
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+```
+
+De la consulta se extrae la siguiente gráfica:
+
+```{python}
+# Asegurar que el tiempo sea formato datetime y ordenar
+df['time'] = pd.to_datetime(df['time'])
+df = df.sort_values('time')
+
+# Crear la visualización
+plt.figure(figsize=(12, 6))
+
+# Dibujar la línea de eficiencia
+plt.plot(df['time'], df['eficiencia_aerobica'], 
+         color='#00d1b2', linewidth=2, label='Eficiencia Aeróbica (m / latido)')
+
+# Añadir una línea de tendencia (media móvil más larga para ver la fatiga)
+plt.plot(df['time'], df['eficiencia_aerobica'].rolling(window=30).mean(), 
+         color='#ff3860', linestyle='--', alpha=0.7, label='Tendencia (suavizada)')
+
+# Personalización estética
+plt.title(f'Análisis de Eficiencia Aeróbica - Actividad {id_actividad}', fontsize=14, pad=20)
+plt.xlabel('Tiempo de la Actividad', fontsize=12)
+plt.ylabel('Eficiencia (Velocidad/FC)', fontsize=12)
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.legend()
+
+# Formatear el eje X para que las fechas/horas no se amontonen
+plt.gcf().autofmt_xdate()
+plt.tight_layout()
+
+plt.show()
+```
+
+**Falta interpretar gráfica**
+
+## Comparar EF media entre actividades
+
+Habiendo estudiado la evolución de la EF a lo largo de la sesión, en la actual consulta se ha calculado la EF media de cada sesión y se han comparado ordenando la tabla de mayor a menor valor.
+
+```{python}
+query = f"""
+SELECT usuario, id_actividad, MIN (time) as fecha,
+AVG(velocity_smooth/heartrate) AS eficiencia_aerobica_sesion
+FROM "Run"
+GROUP BY usuario, id_actividad
+ORDER BY eficiencia_aerobica_sesion DESC
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+```
+
+De esta consulta se puede extraer la siguiente gráfica:
+
+```{python}
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import seaborn as sns
+import pandas as pd
+
+# --- 1. Preparación de Datos ---
+# Convertir a datetime si no lo está
+df['fecha'] = pd.to_datetime(df['fecha'])
+
+# Ordenar por fecha para que la línea de tiempo tenga sentido
+df = df.sort_values(by='fecha')
+
+# --- 2. Configuración de Estilo Profesional ---
+sns.set_theme(style="whitegrid", context="talk")
+plt.figure(figsize=(14, 7))
+
+# Definir una paleta de colores distintiva para los usuarios
+palette = sns.color_palette("husl", len(df['usuario'].unique()))
+
+# --- 3. Graficar Puntos y Tendencias ---
+# Iteramos por cada usuario para pintar sus puntos y su línea suavizada
+for i, (user_name, user_data) in enumerate(df.groupby('usuario')):
+    
+    color = palette[i]
+    
+    # A. Puntos dispersos (Raw Data)
+    # Los ponemos con transparencia (alpha) para que se vea el fondo pero no molesten
+    sns.scatterplot(data=user_data, x='fecha', y='eficiencia_aerobica_sesion', 
+                    color=color, alpha=0.3, s=50, legend=False)
+    
+    # B. Línea de Tendencia (Media Móvil)
+    # Usamos una ventana de 5 actividades para suavizar picos. 
+    # Si tienes pocas actividades, baja el 'window' a 3.
+    user_data = user_data.copy() # Evitar warnings de pandas
+    user_data['trend'] = user_data['eficiencia_aerobica_sesion'].rolling(window=5, min_periods=1).mean()
+    
+    plt.plot(user_data['fecha'], user_data['trend'], 
+             color=color, linewidth=3, label=f"{user_name} (Tendencia)")
+
+# --- 4. Formateo y Etiquetas ---
+
+# Formatear el eje X (Fechas)
+ax = plt.gca()
+ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y')) # Ej: Ene 2024
+ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1)) # Un tick cada mes (ajustar según rango de fechas)
+plt.xticks(rotation=0, fontsize=12)
+
+# Títulos y Leyendas
+plt.title("Evolución de la Eficiencia Aeróbica (Velocidad / FC)", fontsize=18, weight='bold', pad=20)
+plt.ylabel("Factor de Eficiencia (m/s / ppm)", fontsize=14)
+plt.xlabel("", fontsize=12)
+
+# Leyenda limpia
+plt.legend(title="Usuarios", title_fontsize='13', fontsize='12', loc='upper left', frameon=True, framealpha=0.9)
+
+# Nota explicativa pequeña
+plt.figtext(0.9, 0.02, "Nota: La línea sólida representa la media móvil (tendencia).\nValores más altos indican mejor forma física.", 
+            ha="right", fontsize=10, style='italic', color="#555555")
+
+# Ajuste final
+sns.despine(left=True, bottom=True)
+plt.tight_layout()
+
+plt.show()
+```
+
+**Falta interpretar la gráfica**
 
 ## Análisis de FC, Cadencia y Velocidad mediante Ventanas Móviles
-Análogo y hacer gráficas con ventanas móviles de la velocidad (ya suaviazada), la cadencia y la FC. 
 
+Este apartado presenta un análisis de la cadencia, la velocidad y la frecuencia cardíaca mínima, máxima y medias uavizado a través de ventanas móviles de 5 segundos, lo que permitirá observar la evolución de estos parámetros a lo largo de la sesión.
+
+Análisis de la evolución de la frecuencia cardíaca:
+
+```{python}
+id_actividad = 16835006867
+
+query = f"""
+SELECT usuario, id_actividad, time,
+  AVG (heartrate) OVER (
+    PARTITION BY usuario, id_actividad
+    ORDER BY time
+    RANGE INTERVAL '5 seconds' PRECEDING
+  ) AS evolucion_FC_media,
+  MIN (heartrate) OVER (
+    PARTITION BY usuario, id_actividad
+    ORDER BY time
+    RANGE INTERVAL '5 seconds' PRECEDING
+  ) AS evolucion_FC_min,
+  MAX (heartrate) OVER (
+    PARTITION BY usuario, id_actividad
+    ORDER BY time
+    RANGE INTERVAL '5 seconds' PRECEDING
+  ) AS evolucion_FC_max
+FROM "Run"
+WHERE id_actividad = {id_actividad}
+ORDER BY usuario, id_actividad 
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+```
+
+Se genera una gráfica para cada medida de la frecuencia cardíaca:
+
+```{python}
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# 2. Preparación de datos
+df['time'] = pd.to_datetime(df['time'])
+
+# 3. Crear la figura con 3 subgráficas (3 filas, 1 columna)
+fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
+
+# Gráfica 1: FC Media
+ax1.plot(df['time'], df['evolucion_fc_media'], color='red', linewidth=1.5)
+ax1.set_title('Evolución Frecuencia Cardiaca Media')
+ax1.set_ylabel('BPM')
+ax1.grid(True, alpha=0.3)
+
+# Gráfica 2: FC Mínima
+ax2.plot(df['time'], df['evolucion_fc_min'], color='blue', linewidth=1.5)
+ax2.set_title('Evolución Frecuencia Cardiaca Mínima')
+ax2.set_ylabel('BPM')
+ax2.grid(True, alpha=0.3)
+
+# Gráfica 3: FC Máxima
+ax3.plot(df['time'], df['evolucion_fc_max'], color='darkred', linewidth=1.5)
+ax3.set_title('Evolución Frecuencia Cardiaca Máxima')
+ax3.set_ylabel('BPM')
+ax3.set_xlabel('Tiempo')
+ax3.grid(True, alpha=0.3)
+
+# Ajustar el formato de las fechas y el espacio entre gráficas
+plt.gcf().autofmt_xdate()
+plt.tight_layout()
+
+plt.show()
+```
+
+**Falta interpretar gráficas**
+
+Análisis de la evolución de la velocidad:
+
+```{python}
+id_actividad = 16835006867
+
+query = f"""
+SELECT usuario, id_actividad, time,
+  AVG (velocity_smooth) OVER (
+    PARTITION BY usuario, id_actividad
+    ORDER BY time
+    RANGE INTERVAL '5 seconds' PRECEDING
+  ) AS evolucion_velocidad
+FROM "Run"
+WHERE id_actividad = {id_actividad}
+ORDER BY usuario, id_actividad 
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+```
+
+Gráfica de la evolución de la velocidad a lo largo de la sesión:
+
+```{python}
+# Convertir el tiempo a formato datetime
+df['time'] = pd.to_datetime(df['time'])
+plt.figure(figsize=(12, 5))
+
+# Graficar la velocidad suavizada
+plt.plot(df['time'], df['evolucion_velocidad'], color='#2ecc71', linewidth=2, label='Velocidad (Suavizada 5s)')
+
+# Rellenar el área debajo de la curva para mejor visibilidad
+plt.fill_between(df['time'], df['evolucion_velocidad'], color='#2ecc71', alpha=0.1)
+
+# Personalización
+plt.title(f'Evolución de Velocidad - Actividad {id_actividad}', fontsize=14)
+plt.xlabel('Tiempo de carrera')
+plt.ylabel('Velocidad (m/s)')
+plt.grid(True, linestyle='--', alpha=0.6)
+plt.legend()
+
+# Formatear el eje X para que no se solapen las horas
+plt.gcf().autofmt_xdate()
+
+plt.show()
+```
+
+**Falta interpretar gráfica**
+
+Análisis de la evolución de la cadencia durante la actividad:
+
+```{python}
+id_actividad = 16835006867
+
+query = f"""
+SELECT usuario, id_actividad, time,
+  AVG (cadence) OVER (
+    PARTITION BY usuario, id_actividad
+    ORDER BY time
+    RANGE INTERVAL '5 seconds' PRECEDING
+  ) AS evolucion_cadencia
+FROM "Run"
+WHERE id_actividad = {id_actividad}
+ORDER BY usuario, id_actividad 
+"""
+table = client.query(query=query)
+df = table.to_pandas()
+df
+```
+
+Gráfica de la evolución de la velocidad:
+
+```{python}
+# Convertir a datetime para que el eje X sea temporal
+df['time'] = pd.to_datetime(df['time'])
+plt.figure(figsize=(12, 5))
+
+# Graficar cadencia
+plt.plot(df['time'], df['evolucion_cadencia'], color='#9b59b6', linewidth=2, label='Cadencia (SPM)')
+
+# Añadir una línea horizontal con la cadencia media ideal (ej. 170-180)
+plt.axhline(y=180, color='grey', linestyle='--', alpha=0.5, label='Objetivo (180 SPM)')
+
+# Personalización
+plt.title(f'Evolución de Cadencia - Actividad {id_actividad}', fontsize=14)
+plt.xlabel('Tiempo de carrera')
+plt.ylabel('Pasos por Minuto (SPM)')
+plt.ylim(df['evolucion_cadencia'].min() - 10, df['evolucion_cadencia'].max() + 10) # Ajuste de zoom
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.legend()
+
+# Formatear el eje X
+plt.gcf().autofmt_xdate()
+plt.tight_layout()
+
+plt.show()
+```
+
+**Falta interpretar gráfica**
 
 ## Ritmo ajustado a la pendiente
 Usar grade_smooth
