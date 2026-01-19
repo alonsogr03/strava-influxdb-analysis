@@ -1091,17 +1091,13 @@ plt.show()
 
 ```{python}
 # Podium ritmo
-query_ritmo = f"""
-SELECT usuario, MIN (time) as fecha,
-FROM (SELECT usuario, 
-id_actividad,
+query= """
+SELECT usuario, 
+id_actividad, 
 MIN(time) as Fecha_Inicio, MAX(time) as Fecha_Fin, 
 date_part('epoch', MAX(time)) - date_part('epoch', MIN(time)) as duracion_segundos,
 ((date_part('epoch', MAX(time)) - date_part('epoch', MIN(time)))/60.0) / (MAX(distance)/1000.0) as ritmo_min_km
 from "Run"
-GROUP BY usuario, id_actividad
-ORDER BY Distancia_Total DESC
-)
 GROUP BY usuario, id_actividad
 ORDER BY ritmo_min_km ASC
 LIMIT 3
@@ -1109,26 +1105,90 @@ LIMIT 3
 table = client.query(query=query)
 df = table.to_pandas()
 
-def decimal_a_minutos_segundos(valor_decimal):
-    # 1. Separamos la parte entera (minutos)
-    minutos = int(valor_decimal)
+def decimal_a_ritmo(valor_decimal):
+    if pd.isna(valor_decimal) or valor_decimal == float('inf'):
+        return "0:00"
     
-    # 2. Tomamos la parte decimal y la multiplicamos por 60 para sacar segundos
-    # Usamos round() para redondear al segundo más cercano y evitar 29.9999
-    segundos = int(round((valor_decimal - minutos) * 60))
+    minutos = int(valor_decimal) # Coge el 5 de 5.5
+    segundos = (valor_decimal - minutos) * 60 # Coge el 0.5 y multiplica por 60 = 30
     
-    # 3. Ajuste por si el redondeo nos da 60 segundos
-    if segundos == 60:
-        minutos += 1
-        segundos = 0
-        
-    # 4. Formateamos: :02d significa "número entero de 2 dígitos, rellena con 0 si hace falta"
-    return f"{minutos:02d}min:{segundos:02d}s"
+    # Formateamos para que segundos siempre tenga 2 cifras (ej. 05)
+    return f"{minutos}:{int(segundos):02d}"
 
-
-# df['minutos_en_zona'] = df['minutos_en_zona'].apply(decimal_a_minutos_segundos)
-
+# 3. Aplicamos la función
+df['ritmo_min_km'] = df['ritmo_min_km'].apply(decimal_a_ritmo)
 df
+```
+
+```{python}
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# 1. Necesitamos el valor numérico para la altura de las barras. 
+# Como el ritmo es mejor cuanto más bajo es, usaremos (1 / valor) o simplemente 
+# el valor original antes de formatear para calcular quién es quién.
+
+# Primero, recuperamos el valor numérico para poder graficar (antes de que fuera string)
+# Si ya ejecutaste la celda anterior, podemos sacar el valor del DataFrame si no lo sobreescribiste,
+# o convertir el string "min:seg" de nuevo a segundos totales.
+
+def ritmo_a_segundos(texto):
+    minutos, segundos = map(int, texto.split(':'))
+    return minutos * 60 + segundos
+
+# Creamos una columna temporal de segundos para determinar la altura
+df['segundos_totales'] = df['ritmo_min_km'].apply(ritmo_a_segundos)
+
+# 2. Reordenar para el podio [2º, 1º, 3º]
+# El más rápido es el que tiene MENOS segundos totales.
+df_sorted = df.sort_values('segundos_totales', ascending=True).reset_index(drop=True)
+df_podio = df_sorted.iloc[[1, 0, 2]].reset_index(drop=True)
+
+# 3. Colores de medallas
+colores_medallas = ['#C0C0C0', '#FFD700', '#CD7F32']
+
+plt.figure(figsize=(10, 7))
+
+# Para que el más rápido sea el más alto, graficamos el "inverso" o una escala invertida
+# Aquí usaremos la diferencia respecto al máximo para que se vea visualmente como un podio
+max_seg = df['segundos_totales'].max() + 10
+alturas_visuales = [max_seg - s for s in df_podio['segundos_totales']]
+
+bars = plt.bar(range(len(df_podio)), alturas_visuales, color=colores_medallas, edgecolor='black')
+
+# 4. Añadir información
+for i, bar in enumerate(bars):
+    usuario = df_podio.loc[i, 'usuario']
+    ritmo_str = df_podio.loc[i, 'ritmo_min_km']
+    segundos = df_podio.loc[i, 'segundos_totales']
+    
+    # Texto encima de la barra (El ritmo real)
+    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
+             f'{ritmo_str} min/km', ha='center', va='bottom', fontweight='bold', fontsize=12)
+    
+    # Determinar puesto
+    if segundos == df['segundos_totales'].min():
+        puesto = "1º"
+    elif segundos == df['segundos_totales'].max():
+        puesto = "3º"
+    else:
+        puesto = "2º"
+
+    # Texto dentro de la barra
+    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() / 2, 
+             f"{puesto}\n\n{usuario}", ha='center', va='center', 
+             color='black', fontsize=14, fontweight='black')
+
+# Estética final
+plt.title('Podio de los Ritmos más Rápidos', fontsize=16, pad=30, fontweight='bold')
+plt.xticks([])
+plt.yticks([])
+plt.gca().spines['top'].set_visible(False)
+plt.gca().spines['right'].set_visible(False)
+plt.gca().spines['left'].set_visible(False)
+
+plt.tight_layout()
+plt.show()
 ```
 
 # Cerrar la conexión a InfluxDB
